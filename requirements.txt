@@ -4,6 +4,7 @@ torch>=2.0.0  # PyTorch for model inference (for GPU support, see README.md for 
 soundfile>=0.12.1  # Audio file handling
 huggingface-hub>=0.16.0  # Model downloads from Hugging Face
 gradio>=4.0.0  # Web interface
+flask>=2.3.0  # Web framework for API server
 pydub>=0.25.1  # For audio format conversion
 espeakng-loader>=0.1.0  # For loading espeak-ng library
 phonemizer-fork>=3.2.1  # For phoneme generation
