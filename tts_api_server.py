@@ -7,6 +7,7 @@ Supports multiple voices and real-time audio streaming.
 Key Features:
 - RESTful API endpoint for TTS generation
 - Streaming audio response
+- Word-level timestamps for UI highlighting
 - Multiple voice support
 - Configurable speed and format
 - Cross-platform compatibility
@@ -110,8 +111,34 @@ def get_pipeline_for_voice(voice_name: str) -> KPipeline:
         pipelines[lang_code] = KPipeline(lang_code=lang_code, model=True)
     return pipelines[lang_code]
 
-def generate_tts_stream(voice_name: str, text: str, speed: float = 1.0):
-    """Generate TTS audio as a streaming generator.
+def extract_word_timestamps(tokens) -> List[Dict[str, Any]]:
+    """Extract word-level timestamps from tokens for UI highlighting."""
+    word_timestamps = []
+    
+    if not tokens:
+        return word_timestamps
+    
+    for token in tokens:
+        # Skip tokens without text or timestamps
+        if not hasattr(token, 'text') or not token.text.strip():
+            continue
+        if not hasattr(token, 'start_ts') or not hasattr(token, 'end_ts'):
+            continue
+        if token.start_ts is None or token.end_ts is None:
+            continue
+            
+        word_timestamps.append({
+            'word': token.text,
+            'start_time': float(token.start_ts),
+            'end_time': float(token.end_ts),
+            'phonemes': token.phonemes if hasattr(token, 'phonemes') else None,
+            'whitespace': token.whitespace if hasattr(token, 'whitespace') else None
+        })
+    
+    return word_timestamps
+
+def generate_tts_with_timestamps(voice_name: str, text: str, speed: float = 1.0):
+    """Generate TTS audio with word-level timestamps.
 
     Args:
         voice_name: Name of the voice to use
@@ -119,7 +146,7 @@ def generate_tts_stream(voice_name: str, text: str, speed: float = 1.0):
         speed: Speech speed modifier
 
     Yields:
-        Audio chunks as bytes
+        Tuple of (audio_chunk, word_timestamps)
     """
     global model
 
@@ -154,19 +181,27 @@ def generate_tts_stream(voice_name: str, text: str, speed: float = 1.0):
             else:
                 generator = model(text, voice=voice_path, speed=speed, split_pattern=r'\n+')
 
-            # Stream audio chunks
-            for gs, ps, audio in generator:
-                if audio is not None:
-                    if isinstance(audio, np.ndarray):
-                        audio = torch.from_numpy(audio).float()
+            # Process each result from the generator
+            for result in generator:
+                if result.audio is not None:
+                    if isinstance(result.audio, np.ndarray):
+                        audio = torch.from_numpy(result.audio).float()
+                    else:
+                        audio = result.audio
+                    
+                    # Extract word timestamps if available
+                    word_timestamps = []
+                    if result.tokens:
+                        word_timestamps = extract_word_timestamps(result.tokens)
                     
                     # Convert to bytes for streaming
                     audio_bytes = audio.numpy().tobytes()
-                    yield audio_bytes
                     
-                    logger.debug(f"Generated segment: {gs}")
-                    if ps:  # Only log phonemes if available
-                        logger.debug(f"Phonemes: {ps}")
+                    yield audio_bytes, word_timestamps
+                    
+                    logger.debug(f"Generated segment: {result.graphemes}")
+                    if result.phonemes:  # Only log phonemes if available
+                        logger.debug(f"Phonemes: {result.phonemes}")
 
         except Exception as e:
             raise Exception(f"Error in speech generation: {e}")
@@ -175,7 +210,7 @@ def generate_tts_stream(voice_name: str, text: str, speed: float = 1.0):
         logger.error(f"Error generating speech: {e}")
         import traceback
         traceback.print_exc()
-        yield b''  # Return empty bytes on error
+        yield b'', []  # Return empty bytes and empty timestamps on error
 
 def create_app():
     """Create and configure the Flask application."""
@@ -188,7 +223,7 @@ def create_app():
 
     @app.route('/tts/', methods=['POST'])
     def tts_endpoint():
-        """TTS endpoint that accepts text and returns streaming audio."""
+        """TTS endpoint that accepts text and returns streaming audio with timestamps."""
         try:
             # Parse request data
             if request.is_json:
@@ -197,12 +232,14 @@ def create_app():
                 voice_name = data.get('voice', voices[0] if voices else None)
                 speed = float(data.get('speed', 1.0))
                 format_type = data.get('format', 'wav').lower()
+                include_timestamps = data.get('include_timestamps', True)
             else:
                 # Form data fallback
                 text = request.form.get('text', '')
                 voice_name = request.form.get('voice', voices[0] if voices else None)
                 speed = float(request.form.get('speed', 1.0))
                 format_type = request.form.get('format', 'wav').lower()
+                include_timestamps = request.form.get('include_timestamps', 'true').lower() == 'true'
 
             # Validate inputs
             if not text:
@@ -223,17 +260,22 @@ def create_app():
                 'Cache-Control': 'no-cache',
                 'X-Voice': voice_name,
                 'X-Speed': str(speed),
-                'X-Text-Length': str(len(text))
+                'X-Text-Length': str(len(text)),
+                'X-Include-Timestamps': str(include_timestamps)
             }
 
             # Create streaming response
             def generate():
                 try:
-                    # Generate audio stream
+                    # Generate audio stream with timestamps
                     audio_chunks = []
-                    for chunk in generate_tts_stream(voice_name, text, speed):
+                    all_word_timestamps = []
+                    
+                    for chunk, timestamps in generate_tts_with_timestamps(voice_name, text, speed):
                         if chunk:
                             audio_chunks.append(chunk)
+                        if timestamps:
+                            all_word_timestamps.extend(timestamps)
                     
                     if not audio_chunks:
                         logger.error("No audio generated")
@@ -259,6 +301,64 @@ def create_app():
                     logger.error(f"Error in audio generation: {e}")
                     yield b''
 
+            # If timestamps are requested, return JSON with audio data and timestamps
+            if include_timestamps:
+                try:
+                    # Generate audio and collect timestamps
+                    audio_chunks = []
+                    all_word_timestamps = []
+                    
+                    for chunk, timestamps in generate_tts_with_timestamps(voice_name, text, speed):
+                        if chunk:
+                            audio_chunks.append(chunk)
+                        if timestamps:
+                            all_word_timestamps.extend(timestamps)
+                    
+                    if not audio_chunks:
+                        return jsonify({'error': 'No audio generated'}), 500
+                    
+                    # Combine all chunks
+                    if len(audio_chunks) == 1:
+                        final_audio = audio_chunks[0]
+                    else:
+                        # Convert bytes back to tensor for concatenation
+                        audio_tensors = [torch.frombuffer(chunk, dtype=torch.float32) for chunk in audio_chunks]
+                        final_audio = torch.cat(audio_tensors, dim=0)
+                    
+                    # Convert to WAV format and encode as base64
+                    audio_buffer = io.BytesIO()
+                    sf.write(audio_buffer, final_audio.numpy(), SAMPLE_RATE, format='WAV')
+                    audio_buffer.seek(0)
+                    import base64
+                    audio_base64 = base64.b64encode(audio_buffer.read()).decode('utf-8')
+                    
+                    # Return JSON response with audio and timestamps
+                    response_data = {
+                        'audio': audio_base64,
+                        'audio_format': 'wav',
+                        'sample_rate': SAMPLE_RATE,
+                        'word_timestamps': all_word_timestamps,
+                        'total_duration': all_word_timestamps[-1]['end_time'] if all_word_timestamps else 0,
+                        'voice': voice_name,
+                        'speed': speed,
+                        'text': text
+                    }
+                    
+                    headers = {
+                        'Content-Type': 'application/json',
+                        'Cache-Control': 'no-cache',
+                        'X-Voice': voice_name,
+                        'X-Speed': str(speed),
+                        'X-Text-Length': str(len(text))
+                    }
+                    
+                    return jsonify(response_data), 200, headers
+                    
+                except Exception as e:
+                    logger.error(f"Error in timestamp generation: {e}")
+                    return jsonify({'error': str(e)}), 500
+
+            # Return streaming audio response
             return Response(generate(), headers=headers)
 
         except Exception as e:
@@ -300,7 +400,7 @@ def create_app():
             'service': 'Kokoro TTS API',
             'version': '1.0.0',
             'endpoints': {
-                'POST /tts/': 'Generate streaming TTS audio',
+                'POST /tts/': 'Generate streaming TTS audio with timestamps',
                 'GET /tts/voices': 'Get available voices',
                 'GET /tts/health': 'Health check'
             },
@@ -308,7 +408,13 @@ def create_app():
                 'text': 'Text to convert to speech (required)',
                 'voice': 'Voice name (required)',
                 'speed': 'Speech speed (0.1-3.0, default: 1.0)',
-                'format': 'Output format (wav, mp3, aac, default: wav)'
+                'format': 'Output format (wav, mp3, aac, default: wav)',
+                'include_timestamps': 'Include word timestamps (true/false, default: true)'
+            },
+            'features': {
+                'word_timestamps': 'Word-level timing for UI highlighting',
+                'streaming_audio': 'Real-time audio streaming',
+                'multiple_voices': 'Support for 54+ voices across 8 languages'
             }
         })
 

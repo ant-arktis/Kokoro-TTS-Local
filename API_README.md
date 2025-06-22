@@ -6,6 +6,7 @@ A Flask-based API server that provides streaming TTS audio generation using the 
 
 - **RESTful API**: Clean HTTP endpoints for TTS generation
 - **Streaming Audio**: Real-time audio streaming for immediate playback
+- **Word-Level Timestamps**: Precise timing data for UI highlighting
 - **Multiple Voices**: Support for all available Kokoro voices
 - **Configurable Speed**: Adjustable speech speed (0.1x to 3.0x)
 - **Health Monitoring**: Built-in health check endpoint
@@ -37,7 +38,7 @@ python test_tts_api.py
 ## API Endpoints
 
 ### POST `/tts/`
-Generate streaming TTS audio.
+Generate streaming TTS audio with optional word timestamps.
 
 **Request Body (JSON):**
 ```json
@@ -45,7 +46,8 @@ Generate streaming TTS audio.
     "text": "Hello, this is a test of the TTS API.",
     "voice": "af_bella",
     "speed": 1.0,
-    "format": "wav"
+    "format": "wav",
+    "include_timestamps": true
 }
 ```
 
@@ -55,14 +57,45 @@ text=Hello, this is a test of the TTS API.
 voice=af_bella
 speed=1.0
 format=wav
+include_timestamps=true
 ```
 
-**Response:**
+**Response (with timestamps):**
+```json
+{
+    "audio": "base64_encoded_wav_audio",
+    "audio_format": "wav",
+    "sample_rate": 24000,
+    "word_timestamps": [
+        {
+            "word": "Hello",
+            "start_time": 0.0,
+            "end_time": 0.5,
+            "phonemes": "həˈloʊ",
+            "whitespace": " "
+        },
+        {
+            "word": "this",
+            "start_time": 0.6,
+            "end_time": 1.1,
+            "phonemes": "ðɪs",
+            "whitespace": " "
+        }
+    ],
+    "total_duration": 3.2,
+    "voice": "af_bella",
+    "speed": 1.0,
+    "text": "Hello, this is a test of the TTS API."
+}
+```
+
+**Response (streaming audio):**
 - **Content-Type**: `audio/wav`
 - **Headers**: 
   - `X-Voice`: Voice used
   - `X-Speed`: Speed used
   - `X-Text-Length`: Length of input text
+  - `X-Include-Timestamps`: Whether timestamps were included
 - **Body**: Streaming WAV audio data
 
 ### GET `/tts/voices`
@@ -98,7 +131,7 @@ Get API information.
     "service": "Kokoro TTS API",
     "version": "1.0.0",
     "endpoints": {
-        "POST /tts/": "Generate streaming TTS audio",
+        "POST /tts/": "Generate streaming TTS audio with timestamps",
         "GET /tts/voices": "Get available voices",
         "GET /tts/health": "Health check"
     },
@@ -106,7 +139,13 @@ Get API information.
         "text": "Text to convert to speech (required)",
         "voice": "Voice name (required)",
         "speed": "Speech speed (0.1-3.0, default: 1.0)",
-        "format": "Output format (wav, mp3, aac, default: wav)"
+        "format": "Output format (wav, mp3, aac, default: wav)",
+        "include_timestamps": "Include word timestamps (true/false, default: true)"
+    },
+    "features": {
+        "word_timestamps": "Word-level timing for UI highlighting",
+        "streaming_audio": "Real-time audio streaming",
+        "multiple_voices": "Support for 54+ voices across 8 languages"
     }
 }
 ```
@@ -161,18 +200,172 @@ curl -X POST http://your-domain.com/tts/ \
 
 ## Client Examples
 
-### Python (requests)
+### JavaScript (fetch) - With Timestamps
+
+```javascript
+// Generate TTS audio with word timestamps
+const response = await fetch('http://localhost:5000/tts/', {
+    method: 'POST',
+    headers: {
+        'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+        text: 'Hello, this is a test.',
+        voice: 'af_bella',
+        speed: 1.0,
+        include_timestamps: true
+    })
+});
+
+const data = await response.json();
+
+// Create audio from base64
+const audioBlob = new Blob([
+    Uint8Array.from(atob(data.audio), c => c.charCodeAt(0))
+], { type: 'audio/wav' });
+
+const audio = new Audio(URL.createObjectURL(audioBlob));
+
+// Highlight words during playback
+audio.addEventListener('timeupdate', () => {
+    const currentTime = audio.currentTime;
+    
+    // Find the current word being spoken
+    const currentWord = data.word_timestamps.find(word => 
+        currentTime >= word.start_time && currentTime <= word.end_time
+    );
+    
+    if (currentWord) {
+        // Highlight the current word in your UI
+        highlightWord(currentWord.word);
+    }
+});
+
+function highlightWord(word) {
+    // Your UI highlighting logic here
+    console.log('Highlighting word:', word);
+}
+
+// Play the audio
+audio.play();
+```
+
+### JavaScript (fetch) - Streaming Audio
+
+```javascript
+// Generate streaming TTS audio (no timestamps)
+const response = await fetch('http://localhost:5000/tts/', {
+    method: 'POST',
+    headers: {
+        'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+        text: 'Hello, this is a test.',
+        voice: 'af_bella',
+        speed: 1.0,
+        include_timestamps: false
+    }),
+    stream: true
+});
+
+// Play audio directly
+const audioBlob = await response.blob();
+const audioUrl = URL.createObjectURL(audioBlob);
+const audio = new Audio(audioUrl);
+audio.play();
+```
+
+### cURL - With Timestamps
+
+```bash
+# Generate TTS audio with word timestamps
+curl -X POST http://localhost:5000/tts/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Hello world",
+    "voice": "af_bella",
+    "speed": 1.0,
+    "include_timestamps": true
+  }' \
+  --output response.json
+
+# Extract audio from JSON response
+jq -r '.audio' response.json | base64 -d > audio.wav
+
+# Display word timestamps
+jq '.word_timestamps[] | "\(.word): \(.start_time)s - \(.end_time)s"' response.json
+```
+
+### cURL - Streaming Audio
+
+```bash
+# Generate streaming TTS audio (no timestamps)
+curl -X POST http://localhost:5000/tts/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Hello world",
+    "voice": "af_bella",
+    "speed": 1.0,
+    "include_timestamps": false
+  }' \
+  --output output.wav
+```
+
+### cURL - Form Data
+
+```bash
+# Generate TTS using form data
+curl -X POST http://localhost:5000/tts/ \
+  -d "text=Hello world" \
+  -d "voice=af_bella" \
+  -d "speed=1.0" \
+  -d "include_timestamps=true" \
+  --output response.json
+```
+
+### Python (requests) - With Timestamps
 
 ```python
 import requests
+import base64
+import json
 
-# Generate TTS audio
+# Generate TTS audio with timestamps
 response = requests.post(
     'http://localhost:5000/tts/',
     json={
         'text': 'Hello, this is a test.',
         'voice': 'af_bella',
-        'speed': 1.0
+        'speed': 1.0,
+        'include_timestamps': True
+    }
+)
+
+data = response.json()
+
+# Save audio to file
+audio_data = base64.b64decode(data['audio'])
+with open('output.wav', 'wb') as f:
+    f.write(audio_data)
+
+# Print word timestamps
+for word_data in data['word_timestamps']:
+    print(f"'{word_data['word']}': {word_data['start_time']:.2f}s - {word_data['end_time']:.2f}s")
+```
+
+### Python (requests) - Streaming
+
+```python
+import requests
+
+# Generate streaming TTS audio
+response = requests.post(
+    'http://localhost:5000/tts/',
+    json={
+        'text': 'Hello, this is a test.',
+        'voice': 'af_bella',
+        'speed': 1.0,
+        'include_timestamps': False
     },
     stream=True
 )
@@ -183,43 +376,174 @@ with open('output.wav', 'wb') as f:
         f.write(chunk)
 ```
 
-### JavaScript (fetch)
+## Word Timestamp Format
 
-```javascript
-// Generate TTS audio
-const response = await fetch('http://localhost:5000/tts/', {
-    method: 'POST',
-    headers: {
-        'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-        text: 'Hello, this is a test.',
-        voice: 'af_bella',
-        speed: 1.0
-    })
-});
+Each word timestamp contains:
 
-// Play audio directly
-const audioBlob = await response.blob();
-const audioUrl = URL.createObjectURL(audioBlob);
-const audio = new Audio(audioUrl);
-audio.play();
+```json
+{
+    "word": "Hello",
+    "start_time": 0.0,
+    "end_time": 0.5,
+    "phonemes": "həˈloʊ",
+    "whitespace": " "
+}
 ```
 
-### cURL
+- **word**: The actual word text
+- **start_time**: When the word starts (in seconds)
+- **end_time**: When the word ends (in seconds)
+- **phonemes**: Phonetic representation (if available)
+- **whitespace**: Space character after the word (if any)
 
-```bash
-# Generate TTS audio
-curl -X POST http://localhost:5000/tts/ \
-  -H "Content-Type: application/json" \
-  -d '{"text": "Hello world", "voice": "af_bella", "speed": 1.0}' \
-  --output output.wav
+## UI Integration Examples
 
-# Get available voices
-curl http://localhost:5000/tts/voices
+### React Component Example
 
-# Health check
-curl http://localhost:5000/tts/health
+```jsx
+import React, { useState, useEffect } from 'react';
+
+function TTSPlayer({ text, voice }) {
+    const [audio, setAudio] = useState(null);
+    const [timestamps, setTimestamps] = useState([]);
+    const [currentWord, setCurrentWord] = useState(null);
+
+    const generateTTS = async () => {
+        const response = await fetch('/tts/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                text,
+                voice,
+                include_timestamps: true
+            })
+        });
+
+        const data = await response.json();
+        
+        // Create audio
+        const audioBlob = new Blob([
+            Uint8Array.from(atob(data.audio), c => c.charCodeAt(0))
+        ], { type: 'audio/wav' });
+        
+        const audioUrl = URL.createObjectURL(audioBlob);
+        const newAudio = new Audio(audioUrl);
+        
+        // Setup word highlighting
+        newAudio.addEventListener('timeupdate', () => {
+            const currentTime = newAudio.currentTime;
+            const word = data.word_timestamps.find(w => 
+                currentTime >= w.start_time && currentTime <= w.end_time
+            );
+            setCurrentWord(word?.word || null);
+        });
+
+        setAudio(newAudio);
+        setTimestamps(data.word_timestamps);
+    };
+
+    return (
+        <div>
+            <button onClick={generateTTS}>Generate Speech</button>
+            <button onClick={() => audio?.play()}>Play</button>
+            <button onClick={() => audio?.pause()}>Pause</button>
+            
+            <div className="text-display">
+                {text.split(' ').map((word, index) => (
+                    <span
+                        key={index}
+                        className={currentWord === word ? 'highlighted' : ''}
+                    >
+                        {word}{' '}
+                    </span>
+                ))}
+            </div>
+        </div>
+    );
+}
+```
+
+### Vue.js Component Example
+
+```vue
+<template>
+    <div>
+        <button @click="generateTTS">Generate Speech</button>
+        <button @click="playAudio" :disabled="!audio">Play</button>
+        <button @click="pauseAudio" :disabled="!audio">Pause</button>
+        
+        <div class="text-display">
+            <span
+                v-for="(word, index) in words"
+                :key="index"
+                :class="{ highlighted: currentWord === word }"
+            >
+                {{ word }}
+            </span>
+        </div>
+    </div>
+</template>
+
+<script>
+export default {
+    data() {
+        return {
+            audio: null,
+            timestamps: [],
+            currentWord: null,
+            words: []
+        };
+    },
+    methods: {
+        async generateTTS() {
+            const response = await fetch('/tts/', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text: this.text,
+                    voice: this.voice,
+                    include_timestamps: true
+                })
+            });
+
+            const data = await response.json();
+            
+            // Create audio
+            const audioBlob = new Blob([
+                Uint8Array.from(atob(data.audio), c => c.charCodeAt(0))
+            ], { type: 'audio/wav' });
+            
+            this.audio = new Audio(URL.createObjectURL(audioBlob));
+            this.timestamps = data.word_timestamps;
+            this.words = this.text.split(' ');
+            
+            // Setup word highlighting
+            this.audio.addEventListener('timeupdate', () => {
+                const currentTime = this.audio.currentTime;
+                const word = this.timestamps.find(w => 
+                    currentTime >= w.start_time && currentTime <= w.end_time
+                );
+                this.currentWord = word?.word || null;
+            });
+        },
+        
+        playAudio() {
+            this.audio?.play();
+        },
+        
+        pauseAudio() {
+            this.audio?.pause();
+        }
+    }
+};
+</script>
+
+<style scoped>
+.highlighted {
+    background-color: yellow;
+    font-weight: bold;
+}
+</style>
 ```
 
 ## Error Handling
@@ -243,6 +567,7 @@ Error responses include a JSON object with an `error` field:
 - **Concurrent Requests**: Flask's threaded mode handles multiple concurrent requests
 - **Audio Streaming**: Large audio files are streamed to reduce memory usage
 - **Voice Caching**: Voices are cached in memory after first use
+- **Timestamp Generation**: Word timestamps add minimal overhead to audio generation
 
 ## Troubleshooting
 
@@ -264,6 +589,11 @@ Error responses include a JSON object with an `error` field:
 4. **Audio quality issues**
    - Ensure the sample rate is set correctly (default: 24000 Hz)
    - Check that the voice files are not corrupted
+
+5. **Timestamp accuracy**
+   - Timestamps are based on the TTS model's internal timing
+   - May vary slightly from actual audio playback due to processing delays
+   - For precise synchronization, use the `timeupdate` event with small intervals
 
 ### Logs
 
